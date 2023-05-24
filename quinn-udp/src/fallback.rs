@@ -4,9 +4,7 @@ use std::{
     time::Instant,
 };
 
-use proto::Transmit;
-
-use super::{log_sendmsg_error, RecvMeta, UdpSockRef, UdpState, IO_ERROR_LOG_INTERVAL};
+use super::{log_sendmsg_error, RecvMeta, Transmit, UdpState, IO_ERROR_LOG_INTERVAL};
 
 /// Fallback UDP socket interface that stubs out all special functionality
 ///
@@ -28,7 +26,7 @@ impl UdpSocketState {
 
     pub fn send(
         &self,
-        socket: UdpSockRef<'_>,
+        socket: super::UdpSockRef<'_>,
         _state: &UdpState,
         transmits: &[Transmit],
     ) -> Result<usize, io::Error> {
@@ -64,9 +62,10 @@ impl UdpSocketState {
         Ok(sent)
     }
 
+    #[cfg(feature = "network")]
     pub fn recv(
         &self,
-        socket: UdpSockRef<'_>,
+        socket: super::UdpSockRef<'_>,
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {

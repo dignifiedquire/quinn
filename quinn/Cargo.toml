@@ -28,12 +28,15 @@ runtime-async-std = ["async-io", "async-std"]
 # Write logs via the `log` crate when no `tracing` subscriber exists
 log = ["tracing/log", "proto/log", "udp/log"]
 
+wasm = ["getrandom/js"]
+
 [badges]
 codecov = { repository = "djc/quinn" }
 maintenance = { status = "experimental" }
 
 [dependencies]
 async-io = { version = "2.0", optional = true }
+getrandom = { version = "0.2", default-features = false }
 async-std = { version = "1.11", optional = true }
 bytes = "1"
 # Enables futures::io::{AsyncRead, AsyncWrite} support for streams
@@ -44,7 +47,7 @@ proto = { package = "quinn-proto", path = "../quinn-proto", version = "0.11", de
 rustls = { version = "0.21.0", default-features = false, features = ["quic"], optional = true }
 thiserror = "1.0.21"
 tracing = "0.1.10"
-tokio = { version = "1.28.1", features = ["sync"] }
+tokio = { version = "1.28.1", default-features = false, features = ["sync"] }
 udp = { package = "quinn-udp", path = "../quinn-udp", version = "0.5", default-features = false }
 
 [dev-dependencies]
@@ -56,7 +59,7 @@ rand = "0.8"
 rcgen = "0.11.1"
 rustls-pemfile = "1.0.0"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1.28.1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+#tokio = { version = "1.28.1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
 tracing-subscriber = { version = "0.3.0", default-features = false, features = ["env-filter", "fmt", "ansi", "time", "local-time"] }
 tracing-futures = { version = "0.2.0", default-features = false, features = ["std-future"] }
 url = "2"
