@@ -12,6 +12,7 @@ use std::{
     time::Instant,
 };
 
+use libc::{c_int, c_uint, c_void, iovec, size_t, socklen_t, ssize_t};
 use socket2::SockRef;
 
 use super::{
@@ -312,6 +313,122 @@ fn send(
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn send(state: &UdpSocketState, io: SockRef<'_>, transmits: &[Transmit]) -> io::Result<usize> {
+    send_x(state, io, transmits)
+}
+
+/// Extended version for sendmsg_x() and recvmsg_x() calls
+///
+/// For recvmsg_x(), the size of the data received is given by the field
+/// msg_datalen.
+///
+/// For sendmsg_x(), the size of the data to send is given by the length of
+/// the iovec array -- like sendmsg(). The field msg_datalen is ignored.
+#[repr(C)]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+struct msghdr_x {
+    /// optional address
+    msg_name: *mut c_void,
+    /// size of address
+    msg_namelen: socklen_t,
+    /// scatter/gather array
+    msg_iov: *mut iovec,
+    /// # elements in msg_iov
+    msg_iovlen: c_int,
+    /// ancillary data, see below
+    msg_control: *mut c_void,
+    /// ancillary data buffer len
+    msg_controllen: socklen_t,
+    /// flags on received message
+    msg_flags: c_int,
+    /// byte length of buffer in msg_iov
+    msg_datalen: size_t,
+}
+
+extern "C" {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    // ssize_t sendmsg_x(int s, const struct msghdr_x *msgp, u_int cnt, int flags);
+    fn sendmsg_x(s: c_int, msgp: *const msghdr_x, cnt: c_uint, flags: c_int) -> ssize_t;
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn send_x(state: &UdpSocketState, io: SockRef<'_>, transmits: &[Transmit]) -> io::Result<usize> {
+    let num_transmits = transmits.len().min(BATCH_SIZE);
+    if num_transmits > 1 {
+        println!("sendign {} transmits", num_transmits);
+    }
+    let mut msgs: [msghdr_x; BATCH_SIZE] = unsafe { mem::zeroed() };
+    let mut iovecs: [libc::iovec; BATCH_SIZE] = unsafe { mem::zeroed() };
+    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
+    // TODO: need to check for low & high water marks and handle those
+    // TODO: make sure all addrs are the same, can't target individual addresses
+
+    for (i, transmit) in transmits.iter().enumerate().take(BATCH_SIZE) {
+        let dst_addr = socket2::SockAddr::from(transmit.destination);
+        let hdr = &mut msgs[i];
+        let iov = &mut iovecs[i];
+        let ctrl = &mut ctrls[i];
+
+        iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
+        iov.iov_len = transmit.contents.len();
+        hdr.msg_iov = iov;
+        hdr.msg_iovlen = 1;
+
+        // Docs say we should set msg_name and msg_namelen to null,
+        // but on macos 13.1 this results in failure, so we can actually set the address.
+        let name = dst_addr.as_ptr() as *mut libc::c_void;
+        let namelen = dst_addr.len();
+        hdr.msg_name = name as *mut _;
+        hdr.msg_namelen = namelen;
+
+        // hdr.msg_name = std::ptr::null_mut();
+        // hdr.msg_namelen = 0;
+
+        // Can't encode ECN information, no support for control msgs
+        // hdr.msg_control = std::ptr::null_mut();
+        // hdr.msg_controllen = 0;
+
+        // TODO: encode ECN
+        // It seems we can actually set control messages, unclear if they work
+
+        hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+        hdr.msg_controllen = CMSG_LEN as _;
+    }
+
+    loop {
+        let n = unsafe { sendmsg_x(io.as_raw_fd(), msgs.as_ptr(), num_transmits as _, 0) };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            match dbg!(&e).kind() {
+                io::ErrorKind::Interrupted => {
+                    // Retry the transmission
+                }
+                io::ErrorKind::WouldBlock => return Err(e),
+                _ => {
+                    // Other errors are ignored, since they will usually be handled
+                    // by higher level retransmits and timeouts.
+                    // - PermissionDenied errors have been observed due to iptable rules.
+                    //   Those are not fatal errors, since the
+                    //   configuration can be dynamically changed.
+                    // - Destination unreachable errors have been observed for other
+                    // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
+                    //   these by automatically clamping the MTUD upper bound to the interface MTU.
+                    if e.raw_os_error() != Some(libc::EMSGSIZE) {
+                        log_sendmsg_error(&state.last_send_error, e, &transmits[0]);
+                    }
+                }
+            }
+        }
+
+        return Ok(n as usize);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn send_fallback(
+    state: &UdpSocketState,
+    io: SockRef<'_>,
+    transmits: &[Transmit],
+) -> io::Result<usize> {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
     let mut ctrl = cmsg::Aligned([0u8; CMSG_LEN]);
@@ -744,7 +861,7 @@ fn decode_recv(
 pub(crate) const BATCH_SIZE: usize = 32;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) const BATCH_SIZE: usize = 1;
+pub(crate) const BATCH_SIZE: usize = 32; // TODO: what number?
 
 #[cfg(target_os = "linux")]
 mod gso {
@@ -779,6 +896,12 @@ mod gso {
 mod gso {
     use super::*;
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(super) fn max_gso_segments() -> usize {
+        32 // what should be this number?
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     pub(super) fn max_gso_segments() -> usize {
         1
     }
