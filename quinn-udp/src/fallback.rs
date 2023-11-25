@@ -1,10 +1,8 @@
-use std::{
-    io::{self, IoSliceMut},
-    sync::Mutex,
-    time::Instant,
-};
+#[cfg(feature = "network")]
+use std::io::{self, sync::Mutex, time::Instant, IoSliceMut};
 
-use super::{log_sendmsg_error, RecvMeta, Transmit, UdpState, IO_ERROR_LOG_INTERVAL};
+#[cfg(feature = "network")]
+use super::{log_sendmsg_error, RecvMeta, Transmit, IO_ERROR_LOG_INTERVAL};
 
 /// Fallback UDP socket interface that stubs out all special functionality
 ///
@@ -12,10 +10,12 @@ use super::{log_sendmsg_error, RecvMeta, Transmit, UdpState, IO_ERROR_LOG_INTERV
 /// reduced performance compared to that enabled by some target-specific interfaces.
 #[derive(Debug)]
 pub struct UdpSocketState {
+    #[cfg(feature = "network")]
     last_send_error: Mutex<Instant>,
 }
 
 impl UdpSocketState {
+    #[cfg(feature = "network")]
     pub fn new(socket: UdpSocketRef<'_>) -> io::Result<Self> {
         socket.0.set_nonblocking(true)?;
         let now = Instant::now();
@@ -24,6 +24,7 @@ impl UdpSocketState {
         }
     }
 
+    #[cfg(feature = "network")]
     pub fn send(
         &self,
         socket: super::UdpSockRef<'_>,
@@ -98,20 +99,14 @@ impl UdpSocketState {
     }
 }
 
+#[cfg(feature = "network")]
 impl Default for UdpSocketState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Returns the platforms UDP socket capabilities
-pub(crate) fn udp_state() -> super::UdpState {
-    super::UdpState {
-        max_gso_segments: std::sync::atomic::AtomicUsize::new(1),
-        gro_segments: 1,
-    }
-}
-
+#[cfg(feature = "network")]
 #[inline]
 pub(crate) fn may_fragment() -> bool {
     true
